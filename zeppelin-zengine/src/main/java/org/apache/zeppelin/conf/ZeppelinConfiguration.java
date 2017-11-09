@@ -640,7 +640,8 @@ public class ZeppelinConfiguration extends XMLConfiguration {
     ZEPPELIN_SERVER_XFRAME_OPTIONS("zeppelin.server.xframe.options", "SAMEORIGIN"),
     ZEPPELIN_SERVER_JETTY_NAME("zeppelin.server.jetty.name", null),
     ZEPPELIN_SERVER_STRICT_TRANSPORT("zeppelin.server.strict.transport", "max-age=631138519"),
-    ZEPPELIN_SERVER_X_XSS_PROTECTION("zeppelin.server.xxss.protection", "1");
+    ZEPPELIN_SERVER_X_XSS_PROTECTION("zeppelin.server.xxss.protection", "1"),
+    ZEPPELIN_OWNER_ROLE("zeppelin.notebook.default.owner.username", "");
 
     private String varName;
     @SuppressWarnings("rawtypes")
