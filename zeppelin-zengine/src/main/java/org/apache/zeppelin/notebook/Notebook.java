@@ -61,6 +61,12 @@ import org.apache.zeppelin.notebook.repo.NotebookRepo;
 import org.apache.zeppelin.notebook.repo.NotebookRepo.Revision;
 import org.apache.zeppelin.notebook.repo.NotebookRepoSync;
 import org.apache.zeppelin.resource.ResourcePoolUtils;
+import org.apache.zeppelin.interpreter.InterpreterException;
+import org.apache.zeppelin.interpreter.InterpreterFactory;
+import org.apache.zeppelin.interpreter.InterpreterGroup;
+import org.apache.zeppelin.interpreter.InterpreterResult;
+import org.apache.zeppelin.interpreter.InterpreterSetting;
+import org.apache.zeppelin.interpreter.InterpreterSettingManager;
 import org.apache.zeppelin.scheduler.Job;
 import org.apache.zeppelin.scheduler.SchedulerFactory;
 import org.apache.zeppelin.search.SearchService;
@@ -214,10 +220,12 @@ public class Notebook implements NoteEventListener {
       Note oldNote = Note.GSON.fromJson(reader, Note.class);
       convertFromSingleResultToMultipleResultsFormat(oldNote);
       newNote = createNote(subject);
-      if (noteName != null)
+      if (noteName != null) {
         newNote.setName(noteName);
-      else
+      } else {
         newNote.setName(oldNote.getName());
+      }
+      newNote.setCronSupported(getConf());
       List<Paragraph> paragraphs = oldNote.getParagraphs();
       for (Paragraph p : paragraphs) {
         newNote.addCloneParagraph(p);
@@ -254,6 +262,7 @@ public class Notebook implements NoteEventListener {
     } else {
       newNote.setName("Note " + newNote.getId());
     }
+    newNote.setCronSupported(getConf());
     // Copy the interpreter bindings
     List<String> boundInterpreterSettingsIds = getBindedInterpreterSettingsIds(sourceNote.getId());
     bindInterpretersToNote(subject.getUser(), newNote.getId(), boundInterpreterSettingsIds);
@@ -489,6 +498,7 @@ public class Notebook implements NoteEventListener {
 
     note.setJobListenerFactory(jobListenerFactory);
     note.setNotebookRepo(notebookRepo);
+    note.setCronSupported(getConf());
 
     Map<String, SnapshotAngularObject> angularObjectSnapshot = new HashMap<>();
 
@@ -892,6 +902,13 @@ public class Notebook implements NoteEventListener {
         }
       }
 
+      if (!note.isCronSupported(notebook.getConf())) {
+        logger.warn("execution of the cron job is skipped cron is not enabled from Zeppelin server");
+        return;
+      }
+
+      note.runAll();
+
       boolean releaseResource = false;
       try {
         Map<String, Object> config = note.getConfig();
@@ -920,6 +937,11 @@ public class Notebook implements NoteEventListener {
       }
       Map<String, Object> config = note.getConfig();
       if (config == null) {
+        return;
+      }
+
+      if (!note.isCronSupported(getConf())) {
+        logger.warn("execution of the cron job is skipped cron is not enabled from Zeppelin server");
         return;
       }
 

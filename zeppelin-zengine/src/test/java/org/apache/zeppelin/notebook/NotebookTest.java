@@ -24,6 +24,8 @@ import com.google.common.collect.Maps;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.collect.Maps;
@@ -74,6 +76,7 @@ public class NotebookTest implements JobListenerFactory{
 
   @Before
   public void setUp() throws Exception {
+    System.setProperty(ConfVars.ZEPPELIN_NOTEBOOK_CRON_ENABLE.getVarName(), "true");
 
     tmpDir = new File(System.getProperty("java.io.tmpdir")+"/ZeppelinLTest_"+System.currentTimeMillis());
     tmpDir.mkdirs();
@@ -234,7 +237,7 @@ public class NotebookTest implements JobListenerFactory{
       fail("Subject is non-emtpy anonymous, shouldn't fail");
     }
   }
-  
+
   @Test
   public void testPersist() throws IOException, SchedulerException, RepositoryException {
     Note note = notebook.createNote(anonymous);
@@ -441,7 +444,7 @@ public class NotebookTest implements JobListenerFactory{
   private String getResultString(InterpreterResult result) {
     return result == null ? StringUtils.EMPTY : result.toString();
   }
-  
+
   @Test
   public void testAutoRestartInterpreterAfterSchedule() throws InterruptedException, IOException{
     // create a note and a paragraph
@@ -782,17 +785,17 @@ public class NotebookTest implements JobListenerFactory{
     // set admin roles for both user1 and user2
     notebookAuthorization.setRoles(user1, roles);
     notebookAuthorization.setRoles(user2, roles);
-    
+
     Note note = notebook.createNote(new AuthenticationInfo(user1));
-    
-    // check that user1 is owner, reader and writer
+
+    // check that user1 is owner, reader, runner and writer
     assertEquals(notebookAuthorization.isOwner(note.getId(),
         Sets.newHashSet(user1)), true);
     assertEquals(notebookAuthorization.isReader(note.getId(),
         Sets.newHashSet(user1)), true);
     assertEquals(notebookAuthorization.isWriter(note.getId(),
         Sets.newHashSet(user1)), true);
-    
+
     // since user1 and user2 both have admin role, user2 will be reader and writer as well
     assertEquals(notebookAuthorization.isOwner(note.getId(),
         Sets.newHashSet(user2)), false);
@@ -800,22 +803,22 @@ public class NotebookTest implements JobListenerFactory{
         Sets.newHashSet(user2)), true);
     assertEquals(notebookAuthorization.isWriter(note.getId(),
         Sets.newHashSet(user2)), true);
-    
+
     // check that user1 has note listed in his workbench
     Set<String> user1AndRoles = notebookAuthorization.getRoles(user1);
     user1AndRoles.add(user1);
     List<Note> user1Notes = notebook.getAllNotes(user1AndRoles);
     assertEquals(user1Notes.size(), 1);
     assertEquals(user1Notes.get(0).getId(), note.getId());
-    
-    // check that user2 has note listed in his workbech because of admin role
+
+    // check that user2 has note listed in his workbench because of admin role
     Set<String> user2AndRoles = notebookAuthorization.getRoles(user2);
     user2AndRoles.add(user2);
     List<Note> user2Notes = notebook.getAllNotes(user2AndRoles);
     assertEquals(user2Notes.size(), 1);
     assertEquals(user2Notes.get(0).getId(), note.getId());
   }
-  
+
   @Test
   public void testAbortParagraphStatusOnInterpreterRestart() throws InterruptedException,
       IOException {
@@ -1144,7 +1147,7 @@ public class NotebookTest implements JobListenerFactory{
     notes2 = notebook.getAllNotes(user2);
     assertEquals(notes1.size(), 1);
     assertEquals(notes2.size(), 1);
-    
+
     notebook.getNotebookAuthorization().setReaders(note.getId(), Sets.newHashSet("user1"));
     //note is public since writers empty
     notes1 = notebook.getAllNotes(user1);
@@ -1163,19 +1166,19 @@ public class NotebookTest implements JobListenerFactory{
   public void testPublicPrivateNewNote() throws IOException, SchedulerException {
     HashSet<String> user1 = Sets.newHashSet("user1");
     HashSet<String> user2 = Sets.newHashSet("user2");
-    
+
     // case of public note
     assertTrue(conf.isNotebokPublic());
     assertTrue(notebookAuthorization.isPublic());
-    
+
     List<Note> notes1 = notebook.getAllNotes(user1);
     List<Note> notes2 = notebook.getAllNotes(user2);
     assertEquals(notes1.size(), 0);
     assertEquals(notes2.size(), 0);
-    
+
     // user1 creates note
     Note notePublic = notebook.createNote(new AuthenticationInfo("user1"));
-    
+
     // both users have note
     notes1 = notebook.getAllNotes(user1);
     notes2 = notebook.getAllNotes(user2);
@@ -1183,7 +1186,7 @@ public class NotebookTest implements JobListenerFactory{
     assertEquals(notes2.size(), 1);
     assertEquals(notes1.get(0).getId(), notePublic.getId());
     assertEquals(notes2.get(0).getId(), notePublic.getId());
-    
+
     // user1 is only owner
     assertEquals(notebookAuthorization.getOwners(notePublic.getId()).size(), 1);
     assertEquals(notebookAuthorization.getReaders(notePublic.getId()).size(), 0);
@@ -1195,13 +1198,13 @@ public class NotebookTest implements JobListenerFactory{
     assertFalse(conf2.isNotebokPublic());
     // notebook authorization reads from conf, so no need to re-initilize
     assertFalse(notebookAuthorization.isPublic());
-    
+
     // check that still 1 note per user
     notes1 = notebook.getAllNotes(user1);
     notes2 = notebook.getAllNotes(user2);
     assertEquals(notes1.size(), 1);
     assertEquals(notes2.size(), 1);
-    
+
     // create private note
     Note notePrivate = notebook.createNote(new AuthenticationInfo("user1"));
     
@@ -1215,12 +1218,12 @@ public class NotebookTest implements JobListenerFactory{
     assertEquals(notebookAuthorization.getOwners(notePrivate.getId()).size(), 1);
     assertEquals(notebookAuthorization.getReaders(notePrivate.getId()).size(), 1);
     assertEquals(notebookAuthorization.getWriters(notePrivate.getId()).size(), 1);
-    
+
     //set back public to true
     System.setProperty(ConfVars.ZEPPELIN_NOTEBOOK_PUBLIC.getVarName(), "true");
     ZeppelinConfiguration.create();
   }
-  
+
   private void delete(File file){
     if(file.isFile()) file.delete();
     else if(file.isDirectory()){
