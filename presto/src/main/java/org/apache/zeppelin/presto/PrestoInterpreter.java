@@ -270,9 +270,10 @@ public class PrestoInterpreter extends Interpreter {
     synchronized (prestoSessions) {
       ClientSession prestoSession = prestoSessions.get(userId);
       if (prestoSession == null) {
+        String user = (prestoUser != null && prestoUser.length() > 0) ? prestoUser : userId;
         prestoSession = new ClientSession(
             prestoServer,
-            prestoUser,
+            user,
             prestoSourcePrefix + userId,
             Collections.singleton("zeppelin-presto-interpreter"),
             "Zeppelin Presto Interpreter",
