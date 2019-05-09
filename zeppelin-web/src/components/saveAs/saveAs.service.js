@@ -14,9 +14,12 @@
 
 angular.module('zeppelinWebApp').service('saveAsService', saveAsService);
 
-saveAsService.$inject = ['browserDetectService'];
+saveAsService.$inject = [
+  'browserDetectService',
+  'baseUrlSrv'
+];
 
-function saveAsService(browserDetectService) {
+function saveAsService(browserDetectService, baseUrlSrv) {
   this.saveAs = function(content, filename, extension) {
     var BOM = '\uFEFF';
     if (browserDetectService.detectIE()) {
@@ -70,7 +73,8 @@ function saveAsService(browserDetectService) {
     } else {
       angular.element('body').append('<a id="SaveAsId"></a>');
       var saveAsElement = angular.element('body > a#SaveAsId');
-      saveAsElement.attr('href', '/api/notebook/' + noteId + '/paragraph/' + paragraphId + '/download');
+      var apiPath = baseUrlSrv.getRestApiBase()  + '/notebook/' + noteId + '/paragraph/' + paragraphId + '/download';
+      saveAsElement.attr('href', apiPath);
       saveAsElement.attr('target', '_blank');
       saveAsElement[0].click();
       saveAsElement.remove();
