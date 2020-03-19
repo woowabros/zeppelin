@@ -30,10 +30,12 @@ import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 /**
@@ -63,6 +65,9 @@ public class PrestoInterpreter extends Interpreter {
   private static final String PRESTO_RESULT_EXPIRE_SECONDS = "presto.result.expire.sec";
   private static final String PRESTO_HIGHLIGHT_LIMIT = "presto.highlight_limit";
 
+  private static final long ONE_DAY_MILLIS = 60 * 60 * 24 * 1000;
+  private static final long TEN_MINUTES_MILLIS = 10 * 60 * 1000;
+
   static final String LIMIT_QUERY_HEAD = "SELECT * FROM (\n";
   static final String LIMIT_QUERY_TAIL = "\n) ORIGINAL \nLIMIT ";
   static final int DEFAULT_LIMIT_ROW = 100000;
@@ -84,27 +89,25 @@ public class PrestoInterpreter extends Interpreter {
 
   private final Map<String, ParagraphTask> paragraphTasks = new HashMap<>();
 
+  @SuppressWarnings("WeakerAccess")
   public PrestoInterpreter(Properties property) {
     super(property);
   }
 
-  private class ParagraphTask {
-    StatementClient sqlStatement;
-    QueryData sqlQueryData;
+  private static class ParagraphTask {
+    private StatementClient sqlStatement;
+    private QueryData sqlQueryData;
 
-    AtomicBoolean reportProgress = new AtomicBoolean(false);
-    AtomicBoolean queryCanceled = new AtomicBoolean(false);
-    long timestamp;
+    private AtomicBoolean reportProgress = new AtomicBoolean(false);
+    private AtomicBoolean queryCanceled = new AtomicBoolean(false);
 
-    public ParagraphTask() {
-      this.timestamp = System.currentTimeMillis();
-    }
+    ParagraphTask() {}
 
-    public void setQueryData(QueryData queryData) {
+    void setQueryData(QueryData queryData) {
       sqlQueryData = queryData;
     }
 
-    public synchronized void close() {
+    synchronized void close() {
       reportProgress.set(false);
       queryCanceled.set(true);
       if (sqlStatement != null) {
@@ -116,41 +119,34 @@ public class PrestoInterpreter extends Interpreter {
       sqlStatement = null;
     }
 
-    public String getQueryResultId() {
-      if (sqlQueryData != null) {
+    String getQueryId() {
+      try {
         return sqlStatement.currentStatusInfo().getId();
-      } else {
+      } catch (NullPointerException ignore) {
         return null;
       }
     }
   }
 
+
+  private static final AtomicLong lastCleanedMillis = new AtomicLong(System.currentTimeMillis());
   class CleanResultFileThread extends Thread {
     @Override
     public void run() {
-      long twoHour = 2 * 60 * 60 * 1000;
       logger.info("Presto result file cleaner started.");
       while (true) {
         try {
-          Thread.sleep(10 * 60 * 1000);
+          Thread.sleep(TEN_MINUTES_MILLIS);
         } catch (InterruptedException e) {
           break;
         }
         long currentTime = System.currentTimeMillis();
 
-        List<String> expiredParagraphIds = new ArrayList<>();
-        synchronized (paragraphTasks) {
-          for (Map.Entry<String, ParagraphTask> entry : paragraphTasks.entrySet()) {
-            ParagraphTask task = entry.getValue();
-            if (currentTime - task.timestamp > twoHour) {
-              task.close();
-              expiredParagraphIds.add(entry.getKey());
-            }
+        synchronized (lastCleanedMillis) {
+          if (currentTime - lastCleanedMillis.get() < TEN_MINUTES_MILLIS) {
+            continue;
           }
-
-          for (String paragraphId : expiredParagraphIds) {
-            paragraphTasks.remove(paragraphId);
-          }
+          lastCleanedMillis.set(currentTime);
         }
 
         try {
@@ -172,6 +168,7 @@ public class PrestoInterpreter extends Interpreter {
 
               if (currentTime - eachFile.lastModified() >= expireResult) {
                 logger.info("Delete " + eachFile + " because of expired.");
+                //noinspection ResultOfMethodCallIgnored
                 eachFile.delete();
               }
             }
@@ -223,7 +220,7 @@ public class PrestoInterpreter extends Interpreter {
         try {
           expireResult = Integer.parseInt(expireResultProperty) * 1000;
         } catch (Exception e) {
-          expireResult = 2 * 60 * 60 * 24 * 1000;
+          expireResult = ONE_DAY_MILLIS;
         }
       }
 
@@ -311,15 +308,21 @@ public class PrestoInterpreter extends Interpreter {
     }
   }
 
+  private ParagraphTask createParagraphTask(InterpreterContext context) {
+    synchronized (paragraphTasks) {
+      if (paragraphTasks.containsKey(context.getParagraphId())) {
+        paragraphTasks.get(context.getParagraphId()).close();
+        paragraphTasks.remove(context.getParagraphId());
+      }
+      ParagraphTask task = new ParagraphTask();
+      paragraphTasks.put(context.getParagraphId(), task);
+      return task;
+    }
+  }
+
   private ParagraphTask getParagraphTask(InterpreterContext context) {
     synchronized (paragraphTasks) {
-      ParagraphTask task = paragraphTasks.get(context.getParagraphId());
-      if (task == null) {
-        task = new ParagraphTask();
-        paragraphTasks.put(context.getParagraphId(), task);
-      }
-
-      return task;
+      return paragraphTasks.get(context.getParagraphId());
     }
   }
 
@@ -337,7 +340,7 @@ public class PrestoInterpreter extends Interpreter {
 
     InterpreterOutput interpreterOutput = context.out();
     ResultFileMeta resultFileMeta = null;
-    ParagraphTask task = getParagraphTask(context);
+    ParagraphTask task = createParagraphTask(context);
     try {
       if (sql == null || sql.trim().isEmpty()) {
         return new InterpreterResult(Code.ERROR, "No query");
@@ -371,6 +374,7 @@ public class PrestoInterpreter extends Interpreter {
           resultDataDir + "/" + context.getNoteId() + "_" + context.getParagraphId();
       File resultFile = new File(resultFilePath);
       if (resultFile.exists()) {
+        //noinspection ResultOfMethodCallIgnored
         resultFile.delete();
       }
       while (statementClient.isRunning()
@@ -408,10 +412,9 @@ public class PrestoInterpreter extends Interpreter {
         resultFileMeta.outStream.close();
       }
 
-      InterpreterResult result = new InterpreterResult(Code.SUCCESS,
+      return new InterpreterResult(Code.SUCCESS,
           StringUtils.containsIgnoreCase(queryProcessResult.getQuery(), "EXPLAIN ") ? msg.toString() :
               "%table " + msg.toString());
-      return result;
     } catch (Exception ex) {
       ex.printStackTrace();
       logger.error("Can not run " + sql, ex);
@@ -428,6 +431,8 @@ public class PrestoInterpreter extends Interpreter {
         } catch (IOException ignored) {
         }
       }
+      task.close();
+      removeParagraph(context);
     }
   }
 
@@ -489,7 +494,7 @@ public class PrestoInterpreter extends Interpreter {
         resultFileMeta.outStream.write(0xEF);
         resultFileMeta.outStream.write(0xBB);
         resultFileMeta.outStream.write(0xBF);
-        resultFileMeta.outStream.write(resultToCsv(msg.toString()).getBytes("UTF-8"));
+        resultFileMeta.outStream.write(resultToCsv(msg.toString()).getBytes(StandardCharsets.UTF_8));
       }
       String delimiter = "";
       String csvDelimiter = "";
@@ -499,8 +504,9 @@ public class PrestoInterpreter extends Interpreter {
                 col.toString().replace('\n', ' ').replace('\r', ' ')
                     .replace('\t', ' ').replace('\"', '\''));
         if (receivedRows.get() > maxRowsinNotebook) {
-          resultFileMeta.outStream.write((csvDelimiter + "\"" + colStr + "\"").getBytes("UTF-8"));
+          resultFileMeta.outStream.write((csvDelimiter + "\"" + colStr + "\"").getBytes(StandardCharsets.UTF_8));
         } else {
+          //noinspection ConstantConditions
           msg.append(delimiter).append(!isSelectSql ? col.toString() : colStr);
         }
 
@@ -615,13 +621,9 @@ public class PrestoInterpreter extends Interpreter {
   public void cancel(InterpreterContext context) {
     ParagraphTask task = getParagraphTask(context);
     try {
-      if (task.sqlStatement == null) {
-        return;
-      }
+      logger.info("Kill query '" + task.getQueryId() + "'");
 
-      logger.info("Kill query '" + task.getQueryResultId() + "'");
-
-      task.sqlStatement.close();
+      task.close();
     } finally {
       removeParagraph(context);
     }
@@ -635,7 +637,7 @@ public class PrestoInterpreter extends Interpreter {
   @Override
   public int getProgress(InterpreterContext context) {
     ParagraphTask task = getParagraphTask(context);
-    if (!task.reportProgress.get() || task.sqlQueryData == null) {
+    if (task == null || !task.reportProgress.get() || task.sqlQueryData == null) {
       return 0;
     }
     StatementStats stats = task.sqlStatement.getStats();
@@ -671,20 +673,20 @@ public class PrestoInterpreter extends Interpreter {
     }
   }
 
-  static class QueryProcessResult {
+  private static class QueryProcessResult {
     private String query;
     private String message;
 
-    public QueryProcessResult(String query, String message) {
+    QueryProcessResult(String query, String message) {
       this.query = query;
       this.message = message;
     }
 
-    public String getQuery() {
+    String getQuery() {
       return query;
     }
 
-    public String getMessage() {
+    String getMessage() {
       return message;
     }
   }
