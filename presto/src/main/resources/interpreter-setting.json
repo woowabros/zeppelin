@@ -70,6 +70,12 @@
         "propertyName": "presto.highlight_limit",
         "defaultValue": "true",
         "description": "Highlighting Limit"
+      },
+      "presto.full_download.rows.min": {
+        "envName": null,
+        "propertyName": "presto.full_download.rows.min",
+        "defaultValue": "1000",
+        "description": "Minimum Rows Count to Activate Full Download"
       }
     },
     "editor": {

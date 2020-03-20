@@ -16,6 +16,7 @@
 package org.apache.zeppelin.presto;
 
 import com.facebook.presto.client.*;
+import com.google.common.collect.ImmutableList;
 import io.airlift.units.Duration;
 import okhttp3.OkHttpClient;
 import org.apache.commons.lang.StringUtils;
@@ -64,6 +65,11 @@ public class PrestoInterpreter extends Interpreter {
   private static final String PRESTO_RESULT_PATH = "presto.result.path";
   private static final String PRESTO_RESULT_EXPIRE_SECONDS = "presto.result.expire.sec";
   private static final String PRESTO_HIGHLIGHT_LIMIT = "presto.highlight_limit";
+  private static final int PRESTO_MAX_RESULT_ROW_DEFAULT = 1000;
+  private static final String PRESTO_FULL_DOWNLOAD_ROWS_MIN = "presto.full_download.rows.min";
+  private static final int PRESTO_FULL_DOWNLOAD_ROWS_MIN_DEFAULT = PRESTO_MAX_RESULT_ROW_DEFAULT;
+  private static final String SEPARATOR_TSV = "\t";
+  private static final String SEPARATOR_CSV = ",";
 
   private static final long ONE_DAY_MILLIS = 60 * 60 * 24 * 1000;
   private static final long TEN_MINUTES_MILLIS = 10 * 60 * 1000;
@@ -72,8 +78,9 @@ public class PrestoInterpreter extends Interpreter {
   static final String LIMIT_QUERY_TAIL = "\n) ORIGINAL \nLIMIT ";
   static final int DEFAULT_LIMIT_ROW = 100000;
 
-  private int maxRowsinNotebook = 1000;
+  private int maxRowsinNotebook = PRESTO_MAX_RESULT_ROW_DEFAULT;
   private int maxLimitRow = DEFAULT_LIMIT_ROW;
+  private int fullDownloadRowsMin = PRESTO_FULL_DOWNLOAD_ROWS_MIN_DEFAULT;
   private String resultDataDir;
   private long expireResult;
   private String prestoUser;
@@ -234,6 +241,10 @@ public class PrestoInterpreter extends Interpreter {
         highlightLimit = Boolean.valueOf(highlightLimitProperty);
       } else {
         highlightLimit = true;
+      }
+
+      if (getProperty(PRESTO_FULL_DOWNLOAD_ROWS_MIN) != null) {
+        fullDownloadRowsMin = Integer.parseInt(getProperty(PRESTO_FULL_DOWNLOAD_ROWS_MIN));
       }
 
       resultDataDir = getProperty(PRESTO_RESULT_PATH);
@@ -464,11 +475,11 @@ public class PrestoInterpreter extends Interpreter {
     String[] lines = resultMessage.split("\n");
 
     for (String eachLine: lines) {
-      String[] tokens = eachLine.split("\t");
+      String[] tokens = eachLine.split(SEPARATOR_TSV);
       String prefix = "";
       for (String eachToken: tokens) {
         sb.append(prefix).append("\"").append(eachToken.replace("\"", "'")).append("\"");
-        prefix = ",";
+        prefix = SEPARATOR_CSV;
       }
       sb.append("\n");
     }
@@ -483,46 +494,90 @@ public class PrestoInterpreter extends Interpreter {
       boolean isSelectSql,
       StringBuilder msg,
       ResultFileMeta resultFileMeta) throws IOException {
-    for (List<Object> row : data) {
-      receivedRows.incrementAndGet();
-      if (receivedRows.get() > maxRowsinNotebook && resultFileMeta == null) {
-        resultFileMeta = new ResultFileMeta();
-        resultFileMeta.filePath =
-            resultDataDir + "/" + context.getNoteId() + "_" + context.getParagraphId();
 
-        resultFileMeta.outStream = new FileOutputStream(resultFileMeta.filePath);
-        resultFileMeta.outStream.write(0xEF);
-        resultFileMeta.outStream.write(0xBB);
-        resultFileMeta.outStream.write(0xBF);
-        resultFileMeta.outStream.write(resultToCsv(msg.toString()).getBytes(StandardCharsets.UTF_8));
-      }
-      String delimiter = "";
-      String csvDelimiter = "";
-      for (Object col : row) {
-        String colStr =
-            (col == null ? "null" :
-                col.toString().replace('\n', ' ').replace('\r', ' ')
-                    .replace('\t', ' ').replace('\"', '\''));
-        if (receivedRows.get() > maxRowsinNotebook) {
-          resultFileMeta.outStream.write((csvDelimiter + "\"" + colStr + "\"").getBytes(StandardCharsets.UTF_8));
-        } else {
-          //noinspection ConstantConditions
-          msg.append(delimiter).append(!isSelectSql ? col.toString() : colStr);
-        }
+    List<List<Object>> rowList = ImmutableList.copyOf(data);
 
-        if (delimiter.isEmpty()) {
-          delimiter = "\t";
-          csvDelimiter = ",";
-        }
+    int receivedRowsCnt = receivedRows.get();
+
+    if (resultFileMeta == null) {
+      if ((receivedRowsCnt + rowList.size()) > fullDownloadRowsMin) {
+        resultFileMeta = createResultFileMeta(context, msg);
+        writeRowListToFile(resultFileMeta, rowList);
       }
-      if (receivedRows.get() > maxRowsinNotebook) {
-        resultFileMeta.outStream.write(("\n").getBytes());
-      } else {
-        msg.append("\n");
-      }
+    } else {
+      writeRowListToFile(resultFileMeta, rowList);
     }
+
+    if (receivedRowsCnt < maxRowsinNotebook) {
+      int maxWriteCount = maxRowsinNotebook - receivedRowsCnt;
+      writeRowListToNotebookResult(isSelectSql, msg, rowList, maxWriteCount);
+    }
+
+    receivedRows.addAndGet(rowList.size());
+
     return resultFileMeta;
   }
+
+  private ResultFileMeta createResultFileMeta(InterpreterContext context, StringBuilder msg) throws IOException {
+    ResultFileMeta resultFileMeta;
+    resultFileMeta = new ResultFileMeta();
+    resultFileMeta.filePath =
+            resultDataDir + "/" + context.getNoteId() + "_" + context.getParagraphId();
+
+    resultFileMeta.outStream = new FileOutputStream(resultFileMeta.filePath);
+    resultFileMeta.outStream.write(0xEF);
+    resultFileMeta.outStream.write(0xBB);
+    resultFileMeta.outStream.write(0xBF);
+    resultFileMeta.outStream.write(resultToCsv(msg.toString()).getBytes(StandardCharsets.UTF_8));
+    return resultFileMeta;
+  }
+
+  private void writeRowListToFile(ResultFileMeta resultFileMeta, List<List<Object>> rowList) throws IOException {
+    for (List<Object> row: rowList) {
+
+      String separator = "";
+      for (Object col: row) {
+
+        String colStr =
+                (col == null ? "null" :
+                        removeWhiteSpaceCharacter(col.toString()).replace('\"', '\''));
+
+        resultFileMeta.outStream.write((separator + "\"" + colStr + "\"").getBytes(StandardCharsets.UTF_8));
+
+        separator = SEPARATOR_CSV;
+      }
+
+      resultFileMeta.outStream.write(("\n").getBytes());
+    }
+  }
+
+  private void writeRowListToNotebookResult(
+          boolean isSelectSql, StringBuilder msg, List<List<Object>> rowList, int maxWriteCount) {
+    int writeCount = maxWriteCount;
+
+    for (List<Object> row: rowList) {
+
+      String separator = "";
+      for (Object col: row) {
+
+        String colStr =
+                (col == null ? "null" :
+                        removeWhiteSpaceCharacter(col.toString()).replace('\"', '\''));
+
+        //noinspection ConstantConditions
+        msg.append(separator).append(!isSelectSql ? col.toString() : colStr);
+        separator = SEPARATOR_TSV;
+      }
+
+      msg.append("\n");
+
+      writeCount -= 1;
+      if (writeCount <= 0) {
+        break;
+      }
+    }
+  }
+
 
   QueryProcessResult addLimitClause(String sql) {
     String sqlForTest = convertSqlForTest(sql);
