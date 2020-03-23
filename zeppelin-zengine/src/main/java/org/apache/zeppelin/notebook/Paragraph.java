@@ -314,22 +314,31 @@ public class Paragraph extends Job implements Serializable, Cloneable {
     return (InterpreterResult) getReturn();
   }
 
-  public List<String> getResultMessage() {
-    if (result != null) {
-      if (result instanceof InterpreterResult) {
-        return resultToCsv(((InterpreterResult) result).message());
-      } else if (result instanceof StringMap) {
-        StringMap resultMap = (StringMap) result;
+  public String getResultMessage() {
+    if (results != null) {
+      if (results instanceof InterpreterResult) {
+        return resultToCsv(((InterpreterResult) results).message());
+      } else if (results instanceof StringMap) {
+        StringMap resultMap = (StringMap) results;
         if (resultMap.get("msg") != null) {
-          return generateStringList(resultToCsv(resultMap.get("msg").toString()));
+          List<StringMap> messageList = (List<StringMap>) resultMap.get("msg");
+          StringBuilder sb = new StringBuilder();
+          for (StringMap message: messageList) {
+            if (InterpreterResult.Type.valueOf(message.get("type").toString()) == InterpreterResult.Type.TABLE) {
+              sb.append(
+                      message.get("data").toString()
+              );
+            }
+          }
+          return resultToCsv(sb.toString());
         } else {
-          return generateStringList("No data");
+          return "No data";
         }
       } else {
-        return generateStringList(result.toString());
+        return results.toString();
       }
     } else {
-      return generateStringList("No data");
+      return "No data";
     }
   }
 
@@ -337,12 +346,15 @@ public class Paragraph extends Job implements Serializable, Cloneable {
     return Lists.newArrayList(message);
   }
 
-  private List<String> resultToCsv(List<InterpreterResultMessage> messages) {
-    List<String> results = Lists.newArrayListWithExpectedSize(messages.size());
-    for (InterpreterResultMessage message : messages)
-      results.add(resultToCsv(message.getData()));
+  private String resultToCsv(List<InterpreterResultMessage> messages) {
+    StringBuilder sb = new StringBuilder();
 
-    return results;
+    for (InterpreterResultMessage message : messages)
+      if (message.getType() == InterpreterResult.Type.TABLE) {
+        sb.append(resultToCsv(message.getData()));
+      }
+
+    return sb.toString();
   }
 
   private String resultToCsv(String resultMessage) {
