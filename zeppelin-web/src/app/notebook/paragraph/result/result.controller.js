@@ -647,6 +647,11 @@ function ResultCtrl($scope, $rootScope, $route, $window, $routeParams, $location
     saveAsService.saveAs(dsv, exportedFileName, extension);
   };
 
+  $scope.downloadParagraph = function() {
+    console.log('Download node: %o paragraph: %o', $scope.note.id, $scope.paragraph.id);
+    saveAsService.downloadParagraph($scope.note.id, $scope.paragraph.id, $scope.note, $scope.note.name, 'csv');
+  };
+
   $scope.getBase64ImageSrc = function(base64Data) {
     return 'data:image/png;base64,' + base64Data;
   };
