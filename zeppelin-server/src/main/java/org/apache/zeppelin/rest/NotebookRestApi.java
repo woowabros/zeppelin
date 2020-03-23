@@ -617,13 +617,21 @@ public class NotebookRestApi {
     if (file.exists()) {
       LOG.info("Download data from " + file);
       response = Response.ok((Object) file);
+      response.header("Content-Disposition", "attachment; filename=\"" + fileName + ".csv\"");
+      response.type(MediaType.TEXT_PLAIN + "; charset=UTF-8");
     } else {
       LOG.info("Download data from paragraph result " +
               "because result file is not exists: " + file);
-      response = Response.ok(p.getResultMessage());
+      response = Response.ok("<html>\n" +
+              "<head><meta charset=\"UTF-8\"></head>\n" +
+              "<script language=\"javascript\">\n" +
+              "window.alert(\"저장된 전체데이터가 없습니다.\\n\\n" +
+              "데이터 유효기간(1일)이 지났을 수 있습니다. 쿼리를 다시 실행시켜주세요.\")\n\n" +
+              "window.close()\n" +
+              "</script>\n" +
+              "</html>");
+      response.type(MediaType.TEXT_HTML + "; charset=UTF-8");
     }
-    response.header("Content-Disposition", "attachment; filename=\"" + fileName + ".csv\"");
-    response.type(MediaType.TEXT_PLAIN + "; charset=UTF-8");
     return response.build();
   }
 
